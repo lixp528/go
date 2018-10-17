@@ -232,10 +232,10 @@ func TestVetVerbose(t *testing.T) {
 // this function will report an error.
 // Likewise if outStr does not have an error for a line which has a comment,
 // or if the error message does not match the <regexp>.
-// The <regexp> syntax is Perl but its best to stick to egrep.
+// The <regexp> syntax is Perl but it's best to stick to egrep.
 //
 // Sources files are supplied as fullshort slice.
-// It consists of pairs: full path to source file and it's base name.
+// It consists of pairs: full path to source file and its base name.
 func errorCheck(outStr string, wantAuto bool, fullshort ...string) (err error) {
 	var errs []error
 	out := splitOutput(outStr, wantAuto)
@@ -243,7 +243,7 @@ func errorCheck(outStr string, wantAuto bool, fullshort ...string) (err error) {
 	for i := range out {
 		for j := 0; j < len(fullshort); j += 2 {
 			full, short := fullshort[j], fullshort[j+1]
-			out[i] = strings.Replace(out[i], full, short, -1)
+			out[i] = strings.ReplaceAll(out[i], full, short)
 		}
 	}
 

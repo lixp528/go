@@ -14,7 +14,8 @@ package codegen
 //    Subtraction    //
 // ----------------- //
 
-func SubMem(arr []int, b int) int {
+var ef int
+func SubMem(arr []int, b, c, d int) int {
 	// 386:`SUBL\s[A-Z]+,\s8\([A-Z]+\)`
 	// amd64:`SUBQ\s[A-Z]+,\s16\([A-Z]+\)`
 	arr[2] -= b
@@ -25,6 +26,14 @@ func SubMem(arr []int, b int) int {
 	arr[4]--
 	// 386:`ADDL\s[$]-20,\s20\([A-Z]+\)`
 	arr[5] -= 20
+	// 386:`SUBL\s\([A-Z]+\)\([A-Z]+\*4\),\s[A-Z]+`
+	ef -= arr[b]
+	// 386:`SUBL\s[A-Z]+,\s\([A-Z]+\)\([A-Z]+\*4\)`
+	arr[c] -= b
+	// 386:`ADDL\s[$]-15,\s\([A-Z]+\)\([A-Z]+\*4\)`
+	arr[d] -= 15
+	// 386:`DECL\s\([A-Z]+\)\([A-Z]+\*4\)`
+	arr[b]--
 	// 386:"SUBL\t4"
 	// amd64:"SUBQ\t8"
 	return arr[0] - arr[1]
@@ -39,12 +48,16 @@ func Pow2Muls(n1, n2 int) (int, int) {
 	// 386:"SHLL\t[$]5",-"IMULL"
 	// arm:"SLL\t[$]5",-"MUL"
 	// arm64:"LSL\t[$]5",-"MUL"
+	// ppc64:"SLD\t[$]5",-"MUL"
+	// ppc64le:"SLD\t[$]5",-"MUL"
 	a := n1 * 32
 
 	// amd64:"SHLQ\t[$]6",-"IMULQ"
 	// 386:"SHLL\t[$]6",-"IMULL"
 	// arm:"SLL\t[$]6",-"MUL"
-	// arm64:"LSL\t[$]6",-"MUL"
+	// arm64:`NEG\sR[0-9]+<<6,\sR[0-9]+`,-`LSL`,-`MUL`
+	// ppc64:"SLD\t[$]6","NEG\\sR[0-9]+,\\sR[0-9]+",-"MUL"
+	// ppc64le:"SLD\t[$]6","NEG\\sR[0-9]+,\\sR[0-9]+",-"MUL"
 	b := -64 * n2
 
 	return a, b
@@ -108,12 +121,16 @@ func Pow2Divs(n1 uint, n2 int) (uint, int) {
 	// amd64:"SHRQ\t[$]5",-"DIVQ"
 	// arm:"SRL\t[$]5",-".*udiv"
 	// arm64:"LSR\t[$]5",-"UDIV"
+	// ppc64:"SRD"
+	// ppc64le:"SRD"
 	a := n1 / 32 // unsigned
 
 	// amd64:"SARQ\t[$]6",-"IDIVQ"
 	// 386:"SARL\t[$]6",-"IDIVL"
 	// arm:"SRA\t[$]6",-".*udiv"
 	// arm64:"ASR\t[$]6",-"SDIV"
+	// ppc64:"SRAD"
+	// ppc64le:"SRAD"
 	b := n2 / 64 // signed
 
 	return a, b
@@ -140,6 +157,8 @@ func Pow2Mods(n1 uint, n2 int) (uint, int) {
 	// amd64:"ANDQ\t[$]31",-"DIVQ"
 	// arm:"AND\t[$]31",-".*udiv"
 	// arm64:"AND\t[$]31",-"UDIV"
+	// ppc64:"ANDCC\t[$]31"
+	// ppc64le:"ANDCC\t[$]31"
 	a := n1 % 32 // unsigned
 
 	// 386:-"IDIVL"
@@ -168,36 +187,48 @@ func ConstMods(n1 uint, n2 int) (uint, int) {
 func LenDiv1(a []int) int {
 	// 386:"SHRL\t[$]10"
 	// amd64:"SHRQ\t[$]10"
+	// ppc64:"SRD"\t[$]10"
+	// ppc64le:"SRD"\t[$]10"
 	return len(a) / 1024
 }
 
 func LenDiv2(s string) int {
 	// 386:"SHRL\t[$]11"
 	// amd64:"SHRQ\t[$]11"
+	// ppc64:"SRD\t[$]11"
+	// ppc64le:"SRD\t[$]11"
 	return len(s) / (4097 >> 1)
 }
 
 func LenMod1(a []int) int {
 	// 386:"ANDL\t[$]1023"
 	// amd64:"ANDQ\t[$]1023"
+	// ppc64:"ANDCC\t[$]1023"
+	// ppc64le:"ANDCC\t[$]1023"
 	return len(a) % 1024
 }
 
 func LenMod2(s string) int {
 	// 386:"ANDL\t[$]2047"
 	// amd64:"ANDQ\t[$]2047"
+	// ppc64:"ANDCC\t[$]2047"
+	// ppc64le:"ANDCC\t[$]2047"
 	return len(s) % (4097 >> 1)
 }
 
 func CapDiv(a []int) int {
 	// 386:"SHRL\t[$]12"
 	// amd64:"SHRQ\t[$]12"
+	// ppc64:"SRD\t[$]12"
+	// ppc64le:"SRD\t[$]12"
 	return cap(a) / ((1 << 11) + 2048)
 }
 
 func CapMod(a []int) int {
 	// 386:"ANDL\t[$]4095"
 	// amd64:"ANDQ\t[$]4095"
+	// ppc64:"ANDCC\t[$]4095"
+	// ppc64le:"ANDCC\t[$]4095"
 	return cap(a) % ((1 << 11) + 2048)
 }
 
@@ -206,8 +237,28 @@ func AddMul(x int) int {
 	return 2*x + 1
 }
 
-func MULA(a, b, c uint32) uint32 {
-	// arm:`MULA`
-	// arm64:`MADDW`
-	return a*b + c
+func MULA(a, b, c uint32) (uint32, uint32, uint32) {
+	// arm:`MULA`,-`MUL\s`
+	// arm64:`MADDW`,-`MULW`
+	r0 := a*b + c
+	// arm:`MULA`-`MUL\s`
+	// arm64:`MADDW`,-`MULW`
+	r1 := c*79 + a
+	// arm:`ADD`,-`MULA`-`MUL\s`
+	// arm64:`ADD`,-`MADD`,-`MULW`
+	r2 := b*64 + c
+	return r0, r1, r2
+}
+
+func MULS(a, b, c uint32) (uint32, uint32, uint32) {
+	// arm/7:`MULS`,-`MUL\s`
+	// arm64:`MSUBW`,-`MULW`
+	r0 := c - a*b
+	// arm/7:`MULS`-`MUL\s`
+	// arm64:`MSUBW`,-`MULW`
+	r1 := a - c*79
+	// arm/7:`SUB`,-`MULS`-`MUL\s`
+	// arm64:`SUB`,-`MSUBW`,-`MULW`
+	r2 := c - b*64
+	return r0, r1, r2
 }

@@ -4279,7 +4279,7 @@ func testTransportIdleConnTimeout(t *testing.T, h2 bool) {
 }
 
 // Issue 16208: Go 1.7 crashed after Transport.IdleConnTimeout if an
-// HTTP/2 connection was established but but its caller no longer
+// HTTP/2 connection was established but its caller no longer
 // wanted it. (Assuming the connection cache was enabled, which it is
 // by default)
 //
@@ -4753,7 +4753,7 @@ func TestClientTimeoutKillsConn_BeforeHeaders(t *testing.T) {
 		}
 	case <-time.After(timeout * 10):
 		// If we didn't get into the Handler in 50ms, that probably means
-		// the builder was just slow and the the Get failed in that time
+		// the builder was just slow and the Get failed in that time
 		// but never made it to the server. That's fine. We'll usually
 		// test the part above on faster machines.
 		t.Skip("skipping test on slow builder")
@@ -4764,7 +4764,7 @@ func TestClientTimeoutKillsConn_BeforeHeaders(t *testing.T) {
 // conn is closed so that it's not reused.
 //
 // This is the test variant that has the server send response headers
-// first, and time out during the the write of the response body.
+// first, and time out during the write of the response body.
 func TestClientTimeoutKillsConn_AfterHeaders(t *testing.T) {
 	setParallel(t)
 	defer afterTest(t)
@@ -4885,5 +4885,70 @@ func TestTransportResponseBodyWritableOnProtocolSwitch(t *testing.T) {
 	}
 	if got, want := bs.Text(), "ECHO"; got != want {
 		t.Errorf("read %q; want %q", got, want)
+	}
+}
+
+func TestTransportCONNECTBidi(t *testing.T) {
+	defer afterTest(t)
+	const target = "backend:443"
+	cst := newClientServerTest(t, h1Mode, HandlerFunc(func(w ResponseWriter, r *Request) {
+		if r.Method != "CONNECT" {
+			t.Errorf("unexpected method %q", r.Method)
+			w.WriteHeader(500)
+			return
+		}
+		if r.RequestURI != target {
+			t.Errorf("unexpected CONNECT target %q", r.RequestURI)
+			w.WriteHeader(500)
+			return
+		}
+		nc, brw, err := w.(Hijacker).Hijack()
+		if err != nil {
+			t.Error(err)
+			return
+		}
+		defer nc.Close()
+		nc.Write([]byte("HTTP/1.1 200 OK\r\n\r\n"))
+		// Switch to a little protocol that capitalize its input lines:
+		for {
+			line, err := brw.ReadString('\n')
+			if err != nil {
+				if err != io.EOF {
+					t.Error(err)
+				}
+				return
+			}
+			io.WriteString(brw, strings.ToUpper(line))
+			brw.Flush()
+		}
+	}))
+	defer cst.close()
+	pr, pw := io.Pipe()
+	defer pw.Close()
+	req, err := NewRequest("CONNECT", cst.ts.URL, pr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.URL.Opaque = target
+	res, err := cst.c.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != 200 {
+		t.Fatalf("status code = %d; want 200", res.StatusCode)
+	}
+	br := bufio.NewReader(res.Body)
+	for _, str := range []string{"foo", "bar", "baz"} {
+		fmt.Fprintf(pw, "%s\n", str)
+		got, err := br.ReadString('\n')
+		if err != nil {
+			t.Fatal(err)
+		}
+		got = strings.TrimSpace(got)
+		want := strings.ToUpper(str)
+		if got != want {
+			t.Fatalf("got %q; want %q", got, want)
+		}
 	}
 }

@@ -321,7 +321,7 @@ func goDirFiles(longdir string) (filter []os.FileInfo, err error) {
 	return
 }
 
-var packageRE = regexp.MustCompile(`(?m)^package (\w+)`)
+var packageRE = regexp.MustCompile(`(?m)^package ([\p{Lu}\p{Ll}\w]+)`)
 
 // If singlefilepkgs is set, each file is considered a separate package
 // even if the package names are the same.
@@ -354,8 +354,9 @@ func goDirPackages(longdir string, singlefilepkgs bool) ([][]string, error) {
 }
 
 type context struct {
-	GOOS   string
-	GOARCH string
+	GOOS     string
+	GOARCH   string
+	noOptEnv bool
 }
 
 // shouldTest looks for build tags in a source file and returns
@@ -375,10 +376,13 @@ func shouldTest(src string, goos, goarch string) (ok bool, whyNot string) {
 		if len(line) == 0 || line[0] != '+' {
 			continue
 		}
+		gcFlags := os.Getenv("GO_GCFLAGS")
 		ctxt := &context{
-			GOOS:   goos,
-			GOARCH: goarch,
+			GOOS:     goos,
+			GOARCH:   goarch,
+			noOptEnv: strings.Contains(gcFlags, "-N") || strings.Contains(gcFlags, "-l"),
 		}
+
 		words := strings.Fields(line)
 		if words[0] == "+build" {
 			ok := false
@@ -422,6 +426,10 @@ func (ctxt *context) match(name string) bool {
 	}
 
 	if name == ctxt.GOOS || name == ctxt.GOARCH {
+		return true
+	}
+
+	if ctxt.noOptEnv && name == "gcflags_noopt" {
 		return true
 	}
 
@@ -1063,10 +1071,10 @@ func splitOutput(out string, wantAuto bool) []string {
 // this function will report an error.
 // Likewise if outStr does not have an error for a line which has a comment,
 // or if the error message does not match the <regexp>.
-// The <regexp> syntax is Perl but its best to stick to egrep.
+// The <regexp> syntax is Perl but it's best to stick to egrep.
 //
 // Sources files are supplied as fullshort slice.
-// It consists of pairs: full path to source file and it's base name.
+// It consists of pairs: full path to source file and its base name.
 func (t *test) errorCheck(outStr string, wantAuto bool, fullshort ...string) (err error) {
 	defer func() {
 		if *verbose && err != nil {

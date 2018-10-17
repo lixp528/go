@@ -278,6 +278,13 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 			m.To.Reg = x86.REG_DX
 		}
 
+	case ssa.Op386MULLU:
+		// Arg[0] is already in AX as it's the only register we allow
+		// results lo in AX
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_REG
+		p.From.Reg = v.Args[1].Reg()
+
 	case ssa.Op386MULLQU:
 		// AX * args[1], high 32 bits in DX (result[0]), low 32 bits in AX (result[1]).
 		p := s.Prog(v.Op.Asm())
@@ -484,47 +491,43 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		gc.AddAux(&p.From, v)
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
-	case ssa.Op386MOVSDloadidx8:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_MEM
-		p.From.Reg = v.Args[0].Reg()
-		gc.AddAux(&p.From, v)
-		p.From.Scale = 8
-		p.From.Index = v.Args[1].Reg()
-		p.To.Type = obj.TYPE_REG
-		p.To.Reg = v.Reg()
-	case ssa.Op386MOVLloadidx4, ssa.Op386MOVSSloadidx4:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_MEM
-		p.From.Reg = v.Args[0].Reg()
-		gc.AddAux(&p.From, v)
-		p.From.Scale = 4
-		p.From.Index = v.Args[1].Reg()
-		p.To.Type = obj.TYPE_REG
-		p.To.Reg = v.Reg()
-	case ssa.Op386MOVWloadidx2:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_MEM
-		p.From.Reg = v.Args[0].Reg()
-		gc.AddAux(&p.From, v)
-		p.From.Scale = 2
-		p.From.Index = v.Args[1].Reg()
-		p.To.Type = obj.TYPE_REG
-		p.To.Reg = v.Reg()
-	case ssa.Op386MOVBloadidx1, ssa.Op386MOVWloadidx1, ssa.Op386MOVLloadidx1, ssa.Op386MOVSSloadidx1, ssa.Op386MOVSDloadidx1:
+	case ssa.Op386MOVBloadidx1, ssa.Op386MOVWloadidx1, ssa.Op386MOVLloadidx1, ssa.Op386MOVSSloadidx1, ssa.Op386MOVSDloadidx1,
+		ssa.Op386MOVSDloadidx8, ssa.Op386MOVLloadidx4, ssa.Op386MOVSSloadidx4, ssa.Op386MOVWloadidx2:
 		r := v.Args[0].Reg()
 		i := v.Args[1].Reg()
-		if i == x86.REG_SP {
-			r, i = i, r
-		}
 		p := s.Prog(v.Op.Asm())
 		p.From.Type = obj.TYPE_MEM
+		switch v.Op {
+		case ssa.Op386MOVBloadidx1, ssa.Op386MOVWloadidx1, ssa.Op386MOVLloadidx1, ssa.Op386MOVSSloadidx1, ssa.Op386MOVSDloadidx1:
+			if i == x86.REG_SP {
+				r, i = i, r
+			}
+			p.From.Scale = 1
+		case ssa.Op386MOVSDloadidx8:
+			p.From.Scale = 8
+		case ssa.Op386MOVLloadidx4, ssa.Op386MOVSSloadidx4:
+			p.From.Scale = 4
+		case ssa.Op386MOVWloadidx2:
+			p.From.Scale = 2
+		}
 		p.From.Reg = r
-		p.From.Scale = 1
 		p.From.Index = i
 		gc.AddAux(&p.From, v)
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
+	case ssa.Op386ADDLloadidx4, ssa.Op386SUBLloadidx4, ssa.Op386MULLloadidx4,
+		ssa.Op386ANDLloadidx4, ssa.Op386ORLloadidx4, ssa.Op386XORLloadidx4:
+		p := s.Prog(v.Op.Asm())
+		p.From.Type = obj.TYPE_MEM
+		p.From.Reg = v.Args[1].Reg()
+		p.From.Index = v.Args[2].Reg()
+		p.From.Scale = 4
+		gc.AddAux(&p.From, v)
+		p.To.Type = obj.TYPE_REG
+		p.To.Reg = v.Reg()
+		if v.Reg() != v.Args[0].Reg() {
+			v.Fatalf("input[0] and output not in same register %s", v.LongString())
+		}
 	case ssa.Op386ADDLload, ssa.Op386SUBLload, ssa.Op386MULLload,
 		ssa.Op386ANDLload, ssa.Op386ORLload, ssa.Op386XORLload,
 		ssa.Op386ADDSDload, ssa.Op386ADDSSload, ssa.Op386SUBSDload, ssa.Op386SUBSSload,
@@ -547,22 +550,22 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.To.Reg = v.Args[0].Reg()
 		gc.AddAux(&p.To, v)
 	case ssa.Op386ADDLconstmodify:
-		var p *obj.Prog = nil
 		sc := v.AuxValAndOff()
-		off := sc.Off()
 		val := sc.Val()
-		if val == 1 {
-			p = s.Prog(x86.AINCL)
-		} else if val == -1 {
-			p = s.Prog(x86.ADECL)
-		} else {
-			p = s.Prog(v.Op.Asm())
-			p.From.Type = obj.TYPE_CONST
-			p.From.Offset = val
+		if val == 1 || val == -1 {
+			var p *obj.Prog
+			if val == 1 {
+				p = s.Prog(x86.AINCL)
+			} else {
+				p = s.Prog(x86.ADECL)
+			}
+			off := sc.Off()
+			p.To.Type = obj.TYPE_MEM
+			p.To.Reg = v.Args[0].Reg()
+			gc.AddAux2(&p.To, v, off)
+			break
 		}
-		p.To.Type = obj.TYPE_MEM
-		p.To.Reg = v.Args[0].Reg()
-		gc.AddAux2(&p.To, v, off)
+		fallthrough
 	case ssa.Op386ANDLconstmodify, ssa.Op386ORLconstmodify, ssa.Op386XORLconstmodify:
 		sc := v.AuxValAndOff()
 		off := sc.Off()
@@ -573,45 +576,30 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.To.Type = obj.TYPE_MEM
 		p.To.Reg = v.Args[0].Reg()
 		gc.AddAux2(&p.To, v, off)
-	case ssa.Op386MOVSDstoreidx8:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_REG
-		p.From.Reg = v.Args[2].Reg()
-		p.To.Type = obj.TYPE_MEM
-		p.To.Reg = v.Args[0].Reg()
-		p.To.Scale = 8
-		p.To.Index = v.Args[1].Reg()
-		gc.AddAux(&p.To, v)
-	case ssa.Op386MOVSSstoreidx4, ssa.Op386MOVLstoreidx4:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_REG
-		p.From.Reg = v.Args[2].Reg()
-		p.To.Type = obj.TYPE_MEM
-		p.To.Reg = v.Args[0].Reg()
-		p.To.Scale = 4
-		p.To.Index = v.Args[1].Reg()
-		gc.AddAux(&p.To, v)
-	case ssa.Op386MOVWstoreidx2:
-		p := s.Prog(v.Op.Asm())
-		p.From.Type = obj.TYPE_REG
-		p.From.Reg = v.Args[2].Reg()
-		p.To.Type = obj.TYPE_MEM
-		p.To.Reg = v.Args[0].Reg()
-		p.To.Scale = 2
-		p.To.Index = v.Args[1].Reg()
-		gc.AddAux(&p.To, v)
-	case ssa.Op386MOVBstoreidx1, ssa.Op386MOVWstoreidx1, ssa.Op386MOVLstoreidx1, ssa.Op386MOVSSstoreidx1, ssa.Op386MOVSDstoreidx1:
+	case ssa.Op386MOVBstoreidx1, ssa.Op386MOVWstoreidx1, ssa.Op386MOVLstoreidx1, ssa.Op386MOVSSstoreidx1, ssa.Op386MOVSDstoreidx1,
+		ssa.Op386MOVSDstoreidx8, ssa.Op386MOVSSstoreidx4, ssa.Op386MOVLstoreidx4, ssa.Op386MOVWstoreidx2,
+		ssa.Op386ADDLmodifyidx4, ssa.Op386SUBLmodifyidx4, ssa.Op386ANDLmodifyidx4, ssa.Op386ORLmodifyidx4, ssa.Op386XORLmodifyidx4:
 		r := v.Args[0].Reg()
 		i := v.Args[1].Reg()
-		if i == x86.REG_SP {
-			r, i = i, r
-		}
 		p := s.Prog(v.Op.Asm())
 		p.From.Type = obj.TYPE_REG
 		p.From.Reg = v.Args[2].Reg()
 		p.To.Type = obj.TYPE_MEM
+		switch v.Op {
+		case ssa.Op386MOVBstoreidx1, ssa.Op386MOVWstoreidx1, ssa.Op386MOVLstoreidx1, ssa.Op386MOVSSstoreidx1, ssa.Op386MOVSDstoreidx1:
+			if i == x86.REG_SP {
+				r, i = i, r
+			}
+			p.To.Scale = 1
+		case ssa.Op386MOVSDstoreidx8:
+			p.To.Scale = 8
+		case ssa.Op386MOVSSstoreidx4, ssa.Op386MOVLstoreidx4,
+			ssa.Op386ADDLmodifyidx4, ssa.Op386SUBLmodifyidx4, ssa.Op386ANDLmodifyidx4, ssa.Op386ORLmodifyidx4, ssa.Op386XORLmodifyidx4:
+			p.To.Scale = 4
+		case ssa.Op386MOVWstoreidx2:
+			p.To.Scale = 2
+		}
 		p.To.Reg = r
-		p.To.Scale = 1
 		p.To.Index = i
 		gc.AddAux(&p.To, v)
 	case ssa.Op386MOVLstoreconst, ssa.Op386MOVWstoreconst, ssa.Op386MOVBstoreconst:
@@ -622,7 +610,27 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		p.To.Type = obj.TYPE_MEM
 		p.To.Reg = v.Args[0].Reg()
 		gc.AddAux2(&p.To, v, sc.Off())
-	case ssa.Op386MOVLstoreconstidx1, ssa.Op386MOVLstoreconstidx4, ssa.Op386MOVWstoreconstidx1, ssa.Op386MOVWstoreconstidx2, ssa.Op386MOVBstoreconstidx1:
+	case ssa.Op386ADDLconstmodifyidx4:
+		sc := v.AuxValAndOff()
+		val := sc.Val()
+		if val == 1 || val == -1 {
+			var p *obj.Prog
+			if val == 1 {
+				p = s.Prog(x86.AINCL)
+			} else {
+				p = s.Prog(x86.ADECL)
+			}
+			off := sc.Off()
+			p.To.Type = obj.TYPE_MEM
+			p.To.Reg = v.Args[0].Reg()
+			p.To.Scale = 4
+			p.To.Index = v.Args[1].Reg()
+			gc.AddAux2(&p.To, v, off)
+			break
+		}
+		fallthrough
+	case ssa.Op386MOVLstoreconstidx1, ssa.Op386MOVLstoreconstidx4, ssa.Op386MOVWstoreconstidx1, ssa.Op386MOVWstoreconstidx2, ssa.Op386MOVBstoreconstidx1,
+		ssa.Op386ANDLconstmodifyidx4, ssa.Op386ORLconstmodifyidx4, ssa.Op386XORLconstmodifyidx4:
 		p := s.Prog(v.Op.Asm())
 		p.From.Type = obj.TYPE_CONST
 		sc := v.AuxValAndOff()
@@ -637,7 +645,8 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 			}
 		case ssa.Op386MOVWstoreconstidx2:
 			p.To.Scale = 2
-		case ssa.Op386MOVLstoreconstidx4:
+		case ssa.Op386MOVLstoreconstidx4,
+			ssa.Op386ADDLconstmodifyidx4, ssa.Op386ANDLconstmodifyidx4, ssa.Op386ORLconstmodifyidx4, ssa.Op386XORLconstmodifyidx4:
 			p.To.Scale = 4
 		}
 		p.To.Type = obj.TYPE_MEM
@@ -768,7 +777,8 @@ func ssaGenValue(s *gc.SSAGenState, v *ssa.Value) {
 		ssa.Op386SETGF, ssa.Op386SETGEF,
 		ssa.Op386SETB, ssa.Op386SETBE,
 		ssa.Op386SETORD, ssa.Op386SETNAN,
-		ssa.Op386SETA, ssa.Op386SETAE:
+		ssa.Op386SETA, ssa.Op386SETAE,
+		ssa.Op386SETO:
 		p := s.Prog(v.Op.Asm())
 		p.To.Type = obj.TYPE_REG
 		p.To.Reg = v.Reg()
@@ -840,6 +850,8 @@ var blockJump = [...]struct {
 	ssa.Block386GE:  {x86.AJGE, x86.AJLT},
 	ssa.Block386LE:  {x86.AJLE, x86.AJGT},
 	ssa.Block386GT:  {x86.AJGT, x86.AJLE},
+	ssa.Block386OS:  {x86.AJOS, x86.AJOC},
+	ssa.Block386OC:  {x86.AJOC, x86.AJOS},
 	ssa.Block386ULT: {x86.AJCS, x86.AJCC},
 	ssa.Block386UGE: {x86.AJCC, x86.AJCS},
 	ssa.Block386UGT: {x86.AJHI, x86.AJLS},
@@ -901,6 +913,7 @@ func ssaGenBlock(s *gc.SSAGenState, b, next *ssa.Block) {
 	case ssa.Block386EQ, ssa.Block386NE,
 		ssa.Block386LT, ssa.Block386GE,
 		ssa.Block386LE, ssa.Block386GT,
+		ssa.Block386OS, ssa.Block386OC,
 		ssa.Block386ULT, ssa.Block386UGT,
 		ssa.Block386ULE, ssa.Block386UGE:
 		jmp := blockJump[b.Kind]

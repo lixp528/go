@@ -144,7 +144,7 @@
 // 		link against shared libraries previously created with
 // 		-buildmode=shared.
 // 	-mod mode
-// 		module download mode to use: readonly, release, or vendor.
+// 		module download mode to use: readonly or vendor.
 // 		See 'go help modules' for more.
 // 	-pkgdir dir
 // 		install and load all packages from dir instead of the usual locations.
@@ -348,6 +348,13 @@
 // 		Treat a command (package main) like a regular package.
 // 		Otherwise package main's exported symbols are hidden
 // 		when showing the package's top-level documentation.
+// 	-src
+// 		Show the full source code for the symbol. This will
+// 		display the full Go source of its declaration and
+// 		definition, such as a function definition (including
+// 		the body), type declaration or enclosing const
+// 		block. The output may therefore include unexported
+// 		details.
 // 	-u
 // 		Show documentation for unexported as well as exported
 // 		symbols, methods, and fields.
@@ -1448,6 +1455,12 @@
 // 	GOTMPDIR
 // 		The directory where the go command will write
 // 		temporary source files, packages, and binaries.
+//
+// Each entry in the GOFLAGS list must be a standalone flag.
+// Because the entries are space-separated, flag values must
+// not contain spaces. In some cases, you can provide multiple flag
+// values instead: for example, to set '-ldflags=-s -w'
+// you can use 'GOFLAGS=-ldflags=-s -ldflags=-w'.
 //
 // Environment variables for use with cgo:
 //
@@ -2646,6 +2659,8 @@
 // 	    Run enough iterations of each benchmark to take t, specified
 // 	    as a time.Duration (for example, -benchtime 1h30s).
 // 	    The default is 1 second (1s).
+// 	    The special syntax Nx means to run the benchmark N times
+// 	    (for example, -benchtime 100x).
 //
 // 	-count n
 // 	    Run each test and benchmark n times (default 1).

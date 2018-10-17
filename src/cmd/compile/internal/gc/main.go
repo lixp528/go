@@ -207,7 +207,6 @@ func Main(archInit func(*Arch)) {
 	objabi.Flagcount("e", "no limit on number of errors reported", &Debug['e'])
 	objabi.Flagcount("f", "debug stack frames", &Debug['f'])
 	objabi.Flagcount("h", "halt on error", &Debug['h'])
-	objabi.Flagcount("i", "debug line number stack", &Debug['i'])
 	objabi.Flagfn1("importmap", "add `definition` of the form source=actual to import map", addImportMap)
 	objabi.Flagfn1("importcfg", "read import configuration from `file`", readImportCfg)
 	flag.StringVar(&flag_installsuffix, "installsuffix", "", "set pkg directory `suffix`")
@@ -219,7 +218,6 @@ func Main(archInit func(*Arch)) {
 	if sys.MSanSupported(objabi.GOOS, objabi.GOARCH) {
 		flag.BoolVar(&flag_msan, "msan", false, "build code compatible with C/C++ memory sanitizer")
 	}
-	flag.BoolVar(&dolinkobj, "dolinkobj", true, "generate linker-specific objects; if false, some invalid code may compile")
 	flag.BoolVar(&nolocalimports, "nolocalimports", false, "reject local (relative) imports")
 	flag.StringVar(&outfile, "o", "", "write output to `file`")
 	flag.StringVar(&myimportpath, "p", "", "set expected package import `path`")
@@ -249,7 +247,6 @@ func Main(archInit func(*Arch)) {
 	flag.StringVar(&blockprofile, "blockprofile", "", "write block profile to `file`")
 	flag.StringVar(&mutexprofile, "mutexprofile", "", "write mutex profile to `file`")
 	flag.StringVar(&benchfile, "bench", "", "append benchmark times to `file`")
-	flag.BoolVar(&flagiexport, "iexport", true, "export indexed package data")
 	objabi.Flagparse(usage)
 
 	// Record flags that affect the build result. (And don't
@@ -536,7 +533,9 @@ func Main(archInit func(*Arch)) {
 			fcount++
 		}
 	}
-	// With all types ckecked, it's now safe to verify map keys.
+	// With all types ckecked, it's now safe to verify map keys. One single
+	// check past phase 9 isn't sufficient, as we may exit with other errors
+	// before then, thus skipping map key errors.
 	checkMapKeys()
 	timings.AddEvent(fcount, "funcs")
 
@@ -606,71 +605,69 @@ func Main(archInit func(*Arch)) {
 	timings.Start("fe", "escapes")
 	escapes(xtop)
 
-	if dolinkobj {
-		// Collect information for go:nowritebarrierrec
-		// checking. This must happen before transformclosure.
-		// We'll do the final check after write barriers are
-		// inserted.
-		if compiling_runtime {
-			nowritebarrierrecCheck = newNowritebarrierrecChecker()
+	// Collect information for go:nowritebarrierrec
+	// checking. This must happen before transformclosure.
+	// We'll do the final check after write barriers are
+	// inserted.
+	if compiling_runtime {
+		nowritebarrierrecCheck = newNowritebarrierrecChecker()
+	}
+
+	// Phase 7: Transform closure bodies to properly reference captured variables.
+	// This needs to happen before walk, because closures must be transformed
+	// before walk reaches a call of a closure.
+	timings.Start("fe", "xclosures")
+	for _, n := range xtop {
+		if n.Op == ODCLFUNC && n.Func.Closure != nil {
+			Curfn = n
+			transformclosure(n)
 		}
+	}
 
-		// Phase 7: Transform closure bodies to properly reference captured variables.
-		// This needs to happen before walk, because closures must be transformed
-		// before walk reaches a call of a closure.
-		timings.Start("fe", "xclosures")
-		for _, n := range xtop {
-			if n.Op == ODCLFUNC && n.Func.Closure != nil {
-				Curfn = n
-				transformclosure(n)
-			}
+	// Prepare for SSA compilation.
+	// This must be before peekitabs, because peekitabs
+	// can trigger function compilation.
+	initssaconfig()
+
+	// Just before compilation, compile itabs found on
+	// the right side of OCONVIFACE so that methods
+	// can be de-virtualized during compilation.
+	Curfn = nil
+	peekitabs()
+
+	// Phase 8: Compile top level functions.
+	// Don't use range--walk can add functions to xtop.
+	timings.Start("be", "compilefuncs")
+	fcount = 0
+	for i := 0; i < len(xtop); i++ {
+		n := xtop[i]
+		if n.Op == ODCLFUNC {
+			funccompile(n)
+			fcount++
 		}
+	}
+	timings.AddEvent(fcount, "funcs")
 
-		// Prepare for SSA compilation.
-		// This must be before peekitabs, because peekitabs
-		// can trigger function compilation.
-		initssaconfig()
+	if nsavederrors+nerrors == 0 {
+		fninit(xtop)
+	}
 
-		// Just before compilation, compile itabs found on
-		// the right side of OCONVIFACE so that methods
-		// can be de-virtualized during compilation.
-		Curfn = nil
-		peekitabs()
+	compileFunctions()
 
-		// Phase 8: Compile top level functions.
-		// Don't use range--walk can add functions to xtop.
-		timings.Start("be", "compilefuncs")
-		fcount = 0
-		for i := 0; i < len(xtop); i++ {
-			n := xtop[i]
-			if n.Op == ODCLFUNC {
-				funccompile(n)
-				fcount++
-			}
-		}
-		timings.AddEvent(fcount, "funcs")
+	if nowritebarrierrecCheck != nil {
+		// Write barriers are now known. Check the
+		// call graph.
+		nowritebarrierrecCheck.check()
+		nowritebarrierrecCheck = nil
+	}
 
-		if nsavederrors+nerrors == 0 {
-			fninit(xtop)
-		}
-
-		compileFunctions()
-
-		if nowritebarrierrecCheck != nil {
-			// Write barriers are now known. Check the
-			// call graph.
-			nowritebarrierrecCheck.check()
-			nowritebarrierrecCheck = nil
-		}
-
-		// Finalize DWARF inline routine DIEs, then explicitly turn off
-		// DWARF inlining gen so as to avoid problems with generated
-		// method wrappers.
-		if Ctxt.DwFixups != nil {
-			Ctxt.DwFixups.Finalize(myimportpath, Debug_gendwarfinl != 0)
-			Ctxt.DwFixups = nil
-			genDwarfInline = 0
-		}
+	// Finalize DWARF inline routine DIEs, then explicitly turn off
+	// DWARF inlining gen so as to avoid problems with generated
+	// method wrappers.
+	if Ctxt.DwFixups != nil {
+		Ctxt.DwFixups.Finalize(myimportpath, Debug_gendwarfinl != 0)
+		Ctxt.DwFixups = nil
+		genDwarfInline = 0
 	}
 
 	// Phase 9: Check external declarations.
@@ -680,6 +677,9 @@ func Main(archInit func(*Arch)) {
 			externdcl[i] = typecheck(externdcl[i], Erv)
 		}
 	}
+	// Check the map keys again, since we typechecked the external
+	// declarations.
+	checkMapKeys()
 
 	if nerrors+nsavederrors != 0 {
 		errorexit()
@@ -1129,24 +1129,13 @@ func importfile(f *Val) *types.Pkg {
 			errorexit()
 		}
 
-		// New indexed format is distinguished by an 'i' byte,
-		// whereas old export format always starts with 'c', 'd', or 'v'.
-		if c == 'i' {
-			if !flagiexport {
-				yyerror("import %s: cannot import package compiled with -iexport=true", file)
-				errorexit()
-			}
-
-			iimport(importpkg, imp)
-		} else {
-			if flagiexport {
-				yyerror("import %s: cannot import package compiled with -iexport=false", file)
-				errorexit()
-			}
-
-			imp.UnreadByte()
-			Import(importpkg, imp.Reader)
+		// Indexed format is distinguished by an 'i' byte,
+		// whereas previous export formats started with 'c', 'd', or 'v'.
+		if c != 'i' {
+			yyerror("import %s: unexpected package format byte: %v", file, c)
+			errorexit()
 		}
+		iimport(importpkg, imp)
 
 	default:
 		yyerror("no import in %q", path_)
